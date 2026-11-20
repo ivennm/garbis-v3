@@ -5,6 +5,7 @@ Smoke test: act like the app. Streams WAV files as mic (or desktop) audio over /
   .venv/bin/python tools/talk.py ../bench/samples/short.wav
   .venv/bin/python tools/talk.py --source desktop ../bench/samples/medium.wav
   .venv/bin/python tools/talk.py --mode high ../bench/samples/short.wav
+  .venv/bin/python tools/talk.py --screen desktop.jpg look.wav   (answers screenshot requests with that JPEG)
   .venv/bin/python tools/talk.py --stop-after 1 ../bench/samples/long.wav ../bench/samples/stop.wav
 
 WAVs must be 16 kHz mono int16 (the bench samples are). Reads GARBIS_TOKEN from server/.env.
@@ -52,6 +53,7 @@ async def main():
     ap.add_argument("--stop-after", type=int, default=0,
                     help="send the next WAV after this many clips have started (to test interrupting)")
     ap.add_argument("--mode", choices=["low", "high"], help="switch to this mode first (waits until ready)")
+    ap.add_argument("--screen", help="a JPEG to answer screenshot requests with (like the app's screen vision)")
     ap.add_argument("--wait", type=float, default=25, help="seconds to wait for Garbis to finish")
     a = ap.parse_args()
     source = protocol.MIC if a.source == "mic" else protocol.DESKTOP
@@ -100,6 +102,12 @@ async def main():
                 kind = m.pop("type")
                 if kind == "stop_audio":
                     stopped.add(m["turn_id"])
+                if kind == "capture_screen":
+                    if a.screen:
+                        await ws.send(protocol.pack_screen(m["request_id"], Path(a.screen).read_bytes()))
+                    else:
+                        await ws.send(json.dumps({"type": "screen_unavailable", "request_id": m["request_id"],
+                                                  "reason": "no --screen given"}))
                 if kind == "state" and m["state"] == "idle":
                     turn_done.set()
                 if kind == "mode" and m["mode"] == a.mode and m["status"] == "ready":

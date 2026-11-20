@@ -190,3 +190,141 @@ async def test_turn_finishes_even_if_app_never_reports(monkeypatch, respond):
     await idle(g)
     assert not g.player.active
     assert brain.remembered == []                      # nothing was confirmed as played
+
+
+# ---- addressed vs. mentioned (2026-11-20) ----
+
+@pytest.mark.parametrize("text, expected", [
+    ("hey garbis what's up", "direct"),
+    ("garbis, tell me a joke about robots please", "direct"),
+    ("ok so garbis how tall is the eiffel tower", "direct"),
+    ("what do you think about that one, garbis?", "direct"),
+    ("garbis", "direct"),
+    ("is garbis on", "direct"),                                   # short phrase
+    ("every time i wanted to use garbis i need to write a bunch of commands", "mentioned"),
+    ("yeah i showed my mom garbis yesterday at the party", "mentioned"),
+    ("nothing to see here at all", None),
+])
+def test_addressing(text, expected):
+    from garbis_server.conversation import addressing
+    assert addressing(text) == expected
+
+
+async def test_mention_mid_sentence_stays_quiet_when_brain_says_no():
+    g, app, brain, voice = make_garbis()
+    text = "every time i wanted to use garbis i need to write a bunch of commands"
+    await hear(g, text)
+    await idle(g)
+    assert app.heard() == [(text, "mentioned")]
+    assert brain.chime_asked == [text]
+    assert app.of("say") == [] and voice.spoken == []
+    assert "think" not in app.states()
+    assert brain.remembered == []
+    await hear(g, "and then it crashed again")                   # no follow-up window was opened
+    assert app.heard()[-1] == ("and then it crashed again", "ignored")
+
+
+async def test_mention_mid_sentence_chimes_in_when_brain_says_yes():
+    brain = FakeBrain(replies=["324 meters, beep!"])
+    brain.chime = True
+    g, app, _, _ = make_garbis(brain)
+    text = "i wonder if our robot garbis knows how tall the eiffel tower is"
+    await hear(g, text)
+    await idle(g)
+    assert app.heard() == [(text, "mentioned")]
+    assert [s["text"] for s in app.of("say")] == ["324 meters, beep!"]
+    assert brain.remembered == [(text, "mic", "324 meters, beep!")]
+
+
+async def test_guest_mention_uses_the_same_check():
+    g, app, brain, _ = make_garbis()
+    text = "and that is why my friend garbis would never ever do that"
+    await hear(g, text, "desktop")
+    await idle(g)
+    assert app.heard() == [(text, "mentioned")]
+    assert brain.chime_asked == [text] and brain.remembered == []
+
+
+# ---- screen vision (2026-11-20) ----
+
+JPEG = b"\xff\xd8fake-jpeg"
+
+
+@pytest.mark.parametrize("text, look", [
+    ("hey garbis, can you see my screen?", True),
+    ("garbis what am i looking at", True),
+    ("garbis look at this", True),
+    ("garbis is this game any good", True),
+    ("garbis what's two plus two", False),
+    ("garbis tell me a joke", False),
+])
+def test_wants_screen(text, look):
+    from garbis_server.conversation import wants_screen
+    assert wants_screen(text) is look
+
+
+async def test_screen_question_looks_and_restores():
+    brain = FakeBrain(replies=["That's Hollow Knight on Steam, beep!"])
+    g, app, _, voice = make_garbis(brain)
+    app.screen = JPEG
+    await hear(g, "garbis what am i looking at")
+    await idle(g)
+    await until(lambda: brain.restored == 1)
+
+    assert app.heard() == [("garbis what am i looking at", "look")]
+    assert app.of("capture_screen")
+    assert brain.images == [JPEG]
+    assert voice.spoken[0] == config.LOOK_LINE                       # covers the model swap
+    assert [s["text"] for s in app.of("say")] == [config.LOOK_LINE, "That's Hollow Knight on Steam, beep!"]
+    assert brain.remembered[0][2] == f"{config.LOOK_LINE} That's Hollow Knight on Steam, beep!"
+
+
+async def test_screen_question_without_a_screenshot_says_so(monkeypatch):
+    monkeypatch.setattr(config, "SCREEN_REQUEST_TIMEOUT_S", 0.05)
+    brain = FakeBrain()
+    g, app, _, voice = make_garbis(brain)
+    app.screen = None                                                # vision off in the app
+    await hear(g, "hey garbis, can you see my screen?")
+    await idle(g)
+    assert brain.images == []                                        # never asked the model
+    assert voice.spoken == [config.LOOK_LINE, config.CANT_SEE_LINE]
+
+
+async def test_latest_regular_screenshot_is_used_if_no_fresh_one(monkeypatch):
+    monkeypatch.setattr(config, "SCREEN_REQUEST_TIMEOUT_S", 0.05)
+    brain = FakeBrain(replies=["I see a browser."])
+    g, app, _, _ = make_garbis(brain)
+    g.on_screen(0, JPEG)                                             # the regular 5 s screenshot
+    app.garbis = None                                                # app doesn't answer the fresh request
+    await hear(g, "garbis look at this")
+    await idle(g)
+    assert brain.images == [JPEG]
+
+
+async def test_normal_questions_never_send_the_screen():
+    brain = FakeBrain()
+    g, app, _, _ = make_garbis(brain)
+    app.screen = JPEG
+    await hear(g, "hey garbis how are you")
+    await idle(g)
+    assert brain.images == [None] and not app.of("capture_screen") and brain.restored == 0
+
+
+@pytest.mark.parametrize("reason, line", [
+    ("screen vision is off in the app", "CANT_SEE_LINE"),
+    ("Screen Recording is not allowed for Garbis (System Settings > Privacy & Security)", "NO_PERMISSION_LINE"),
+    ("no screen image available", "CANT_CAPTURE_LINE"),
+])
+async def test_cant_see_line_matches_the_reason(monkeypatch, reason, line):
+    monkeypatch.setattr(config, "SCREEN_REQUEST_TIMEOUT_S", 0.5)
+    g, app, brain, voice = make_garbis()
+    app.garbis = None                                   # answer by hand with this reason
+    async def refuse():
+        await until(lambda: app.of("capture_screen"))
+        g.on_message({"type": "screen_unavailable", "request_id": app.of("capture_screen")[-1]["request_id"],
+                      "reason": reason})
+    task = asyncio.create_task(refuse())
+    await hear(g, "garbis can you see my screen")
+    await idle(g)
+    await task
+    assert voice.spoken == [config.LOOK_LINE, getattr(config, line)]

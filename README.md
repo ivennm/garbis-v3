@@ -58,13 +58,16 @@ The Mac build is ad-hoc signed (no Apple certificate), so macOS may ask for the 
 **First run:**
 1. Click the **gear** (top right). Set **Address** to `ws://mc-server:8765/ws` (that's the default; it works at home and over Tailscale) and **Token** to the `GARBIS_TOKEN` from `server/.env`.
 2. Allow the **microphone** when asked.
-3. Mac: allow **System Audio Recording** when asked, so Garbis hears guests. If it's blocked, the corner speaker icon turns red and settings say where to allow it.
+3. Mac: allow **System Audio Recording** (guests) and **Screen Recording** (screen vision) when asked. If one is blocked, its corner icon (speaker / eye) turns red and settings say where to allow it.
 4. Use **headphones**. Echo cancellation is off by default because it swallowed "stop" while Garbis talked; turn it on only if you use speakers.
 
 **Day to day:**
 - **Closing the window doesn't quit Garbis.** He keeps listening from the tray / menu bar icon. Quit from its menu, or Cmd+Q on the Mac. "Start in the tray" is in the same menu.
 - Corner controls: connection dot, **LOW/HIGH** mode, mute mic, desktop audio (guests), transcript, settings.
 - Voice: "hey garbis …", "garbis, stop", "garbis think hard" (high mode), "garbis chill" (low mode), "garbis clip that".
+- Say "garbis" at the start or end to talk **to** him. If his name just comes up mid-sentence, he decides whether to chime in (a joke, or a question he can answer) and otherwise stays quiet; the transcript marks it **mentioned**.
+- After he answers, you have 3 s to reply without saying "garbis".
+- **Screen vision:** ask "garbis, what am I looking at?", "can you see my screen?", "garbis, is this game any good?". He says "let me look", then answers about your **main monitor** about 7 s later. The eye icon (corner, settings, tray) turns it on or off. While it's on, the app sends a small screenshot every 5 s; the server keeps only the latest one, in memory, and only looks when you ask.
 - Open on a second device: it takes over (the first shows **Use here**). Close it, and the first takes back over by itself.
 
 **Desktop audio fallback (Mac):** if system audio capture won't work, install [BlackHole](https://existential.audio/blackhole/) (2ch). Make a Multi-Output Device in Audio MIDI Setup (your speakers/headphones + BlackHole) and use it as the system output. Then pick **BlackHole 2ch** as the desktop audio **Source** in Garbis's settings.

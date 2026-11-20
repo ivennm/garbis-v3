@@ -12,6 +12,7 @@ import { app, BrowserWindow, ipcMain, nativeImage, session, shell, systemPrefere
 import appIcon from '../../resources/icon.png?asset'
 import type { AppInfo, Layout, Settings, TrayAction, TrayState } from '../shared/types'
 import { setupDesktopAudio } from './desktopAudio'
+import { captureMainScreen } from './screenCapture'
 import { loadSettings, saveSettings } from './settings'
 import { GarbisTray } from './tray'
 
@@ -177,6 +178,8 @@ ipcMain.handle('settings:set', (_e, patch: Partial<Settings>): Settings => {
 ipcMain.handle('window:layout', (_e, next: Layout) => {
   if (next in LAYOUTS) setLayout(next)
 })
+
+ipcMain.handle('screen:capture', (_e, maxWidth: number) => captureMainScreen(Math.min(Math.max(Number(maxWidth) || 768, 320), 1920)))
 
 ipcMain.on('tray:state', (_e, state: TrayState) => {
   lastTrayState = state

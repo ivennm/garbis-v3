@@ -40,6 +40,7 @@ export default function SettingsPanel() {
   const desktopLevel = useGarbis((s) => s.desktopLevel)
   const desktopLive = useGarbis((s) => s.desktopLive)
   const desktopError = useGarbis((s) => s.desktopError)
+  const screenError = useGarbis((s) => s.screenError)
   const conn = useGarbis((s) => s.conn)
   const connDetail = useGarbis((s) => s.connDetail)
   const devices = useDevices()
@@ -182,6 +183,19 @@ export default function SettingsPanel() {
               : 'Starting…'}
           </p>
         )}
+      </section>
+
+      <section>
+        <h2>Screen vision</h2>
+        <label className="check">
+          <input type="checkbox" checked={draft.screenVision} onChange={(e) => set('screenVision', e.target.checked)} />
+          Garbis can see my main monitor{' '}
+          <span className="hint">
+            (a small screenshot every 5 s, kept only in the server's memory; he looks only when you ask, like "what am I
+            looking at?")
+          </span>
+        </label>
+        {draft.screenVision && screenError && <p className="hint error">{screenError}</p>}
       </section>
 
       <section>

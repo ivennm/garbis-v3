@@ -67,6 +67,9 @@ class FakeHandler:
     def on_message(self, msg):
         self.messages.append(msg)
 
+    def on_screen(self, request_id, jpeg):
+        self.audio.append(f"screen {request_id} {len(jpeg)}")
+
     def on_active_changed(self, conn):
         self.active_changes.append(conn.device_name if conn else None)
 
@@ -81,6 +84,12 @@ MIC_FRAME = protocol.pack_audio(protocol.MIC, np.zeros(320, dtype=np.int16))
 
 async def settle():
     await asyncio.sleep(0.02)
+
+
+@pytest.fixture(autouse=True)
+def no_token_by_default(monkeypatch):
+    """Don't depend on the real server/.env; tests that need a token set it themselves."""
+    monkeypatch.setattr(config, "GARBIS_TOKEN", "")
 
 
 @pytest.fixture
@@ -165,3 +174,15 @@ async def test_posts_reach_only_the_active_app(sessions):
     assert not a.of("state")
     a.disconnect(); b.disconnect()
     await asyncio.gather(ta, tb)
+
+
+async def test_screenshot_frames_reach_the_handler(sessions):
+    ws = FakeWS(hello("mac"))
+    t = asyncio.create_task(sessions.handle(ws))
+    await settle()
+    ws.binary(protocol.pack_screen(7, b"\xff\xd8" + b"x" * 100))
+    ws.binary(protocol.pack_screen(8, b"not a jpeg"))               # rejected
+    await settle()
+    assert sessions.handler.audio == ["screen 7 102"]
+    ws.disconnect()
+    await t

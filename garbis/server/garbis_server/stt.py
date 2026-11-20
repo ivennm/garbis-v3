@@ -28,12 +28,12 @@ def _norm(text: str) -> str:
 
 
 def fix_garbis(text: str) -> str:
-    """Map common mishearings of 'garbis' back to 'garbis' (exact list + fuzzy match)."""
+    """Map common mishearings of 'garbis' back to 'garbis' (exact list, any 5-8 letter "garb..." word, fuzzy match)."""
     out = []
     for word in text.split():
         clean = word.lower().strip(".,!?;:\"")
         clean = clean[:-1] if clean.endswith("'") else clean
-        if clean in config.MISHEARD_GARBIS or (
+        if clean in config.MISHEARD_GARBIS or (5 <= len(clean) <= 8 and clean.startswith("garb")) or (
             len(clean) >= 5 and difflib.SequenceMatcher(None, clean, config.WAKE_WORD).ratio() >= 0.8
         ):
             # keep trailing punctuation so sentence shape survives ("garbis," / "garbis?")
@@ -109,6 +109,7 @@ class Transcriber:
             condition_on_previous_text=False,
             without_timestamps=True,
             vad_filter=False,          # our own VAD already trimmed it
+            initial_prompt=config.STT_INITIAL_PROMPT or None,   # helps it hear "garbis" on a weak mic
         )
         parts = [
             s.text for s in segments

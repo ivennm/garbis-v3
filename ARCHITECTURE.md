@@ -200,6 +200,7 @@ Set `backgroundThrottling: false` on the window. Garbis has to keep listening an
 |---|---|---|---|
 | `0x01` | app → server | `u8 type, int16 LE samples` | mic, 16 kHz mono, 320 samples (20 ms) per frame |
 | `0x02` | app → server | same | desktop audio |
+| `0x03` | app → server | `u8 type, u32 LE request_id, JPEG` | screenshot of the main monitor (768 px wide); `request_id` 0 = the regular one every 5 s |
 | `0x10` | server → app | `u8 type, u32 LE turn_id, u16 LE seq, mp3 bytes` | one TTS clip (one sentence) |
 
 Audio upstream is about 32 KB/s per source.
@@ -213,6 +214,7 @@ Audio upstream is about 32 KB/s per source.
 | `clip_started` | `turn_id, seq` | a clip begins playing |
 | `clip_ended` | `turn_id, seq, interrupted` | a clip finished or was cut |
 | `mic_muted` | `muted` | so the server doesn't wait on a muted mic |
+| `screen_unavailable` | `request_id, reason` | screen vision is off, or the capture failed (e.g. no macOS permission) |
 
 ### 5.3 Server → app
 | Message | Fields | Notes |
@@ -220,13 +222,14 @@ Audio upstream is about 32 KB/s per source.
 | `welcome` | `server_version, protocol, mode, mode_status` | reply to a valid `hello` |
 | `session` | `active, active_device` | sent on connect and whenever the active app changes |
 | `state` | `state: idle\|listen\|think\|speak, source?` | drives the face |
-| `heard` | `source, text, action` | `action`: `reply`, `ignored`, `stop`, `merged`, `command`, `followup` |
+| `heard` | `source, text, action` | `action`: `reply`, `ignored`, `stop`, `merged`, `command`, `followup`, `mentioned` |
 | `say` | `turn_id, seq, text` | sent just before the `0x10` clip with the same ids |
 | `turn_end` | `turn_id` | no more clips for this turn |
 | `stop_audio` | `turn_id` | cut playback now |
 | `mode` | `mode, status: loading\|ready, model` | |
 | `timing` | `turn_id, heard_s, first_text_s, first_audio_s, total_s` | first-audio time comes from `clip_started` |
 | `error` | `code, message` | e.g. `bad_token` (then the server closes), `brain_down` |
+| `capture_screen` | `request_id` | send a fresh screenshot now (a screen question came in) |
 
 `protocol` is a version number. The app shows "update the app" if the server's version is newer than it understands.
 
@@ -236,7 +239,8 @@ Audio upstream is about 32 KB/s per source.
 
 **This behavior doesn't change** (v2 `conversation.py`, CHANGELOG v2.2):
 - **Wake word:** "garbis", with fuzzy fixes for mishearings plus "Garbies" / "Garby's".
-- **Follow-up window:** 4 s from the mic with no wake word.
+- **Follow-up window:** 3 s from the mic with no wake word (4 s in v2). It only opens if Garbis actually said something.
+- **Addressed vs. mentioned (v3, 2026-11-20):** "garbis" in the first 3 or last 2 words (or in a short phrase) means you're talking *to* him, so he answers. "garbis" mid-sentence means he was mentioned in passing: a quick YES/NO check with the same prompt prefix (so the cache holds, about 0.2 s) decides whether to chime in (funny, or a question he can answer). On NO he stays silent: no thinking face, no memory, no follow-up window. The `heard` action is `mentioned`. Low mode uses a rubric prompt; high mode a stricter one (qwen was too eager with the rubric).
 - **Stop phrases** cut Garbis off. **Anything else said while he talks is ignored.**
 - **Merging:** "garbis" … "what's 5+5" becomes one question if he hasn't started speaking yet.
 - **Desktop audio** always needs the wake word and never interrupts Garbis.
@@ -252,6 +256,10 @@ Audio upstream is about 32 KB/s per source.
 | Text → TTS | basic emoji/markdown strip | plus spoken math and symbols (§9) |
 | Logging | `print` | `logging`, same `[timing]` line |
 | New | | `heard.action` and `timing` messages for the transcript panel |
+| Wake word | anywhere in the phrase | addressed → answer; mentioned mid-sentence → he decides whether to chime in |
+| Text → TTS | | roleplay actions like `*whirs and beeps*` are dropped, not read out |
+| Screen vision | none | §8a |
+| Hearing "garbis" | junk filter + mishearing list | plus any 5–8 letter "garb…" word, and whisper is primed with `initial_prompt` "Talking to Garbis the robot." (weak-mic test: name kept 4/4 instead of 0/4, no false wake-ups) |
 
 ---
 
@@ -296,6 +304,19 @@ The "make up a number" sentence is **only in low mode** (PLAN.md §5).
 - **A question asked during the switch** just waits for the model to finish loading. Nothing else is needed.
 
 ---
+
+## 8a. Screen vision (added 2026-11-20)
+
+- **Always watching, looking on demand.** With screen vision on (default; the eye icon in the corner, settings, the tray), the app sends a 768 px JPEG of the **main monitor** every 5 s. The server keeps only the latest one, in RAM, never on disk, and drops it when the active device changes.
+- **Screen questions** (`SCREEN_PHRASES`: "screen", "look at", "what am I looking at", "this game", …) when addressed or in the follow-up window:
+  1. The `heard` action is `look`.
+  2. Garbis says **"Ooh, let me look, beep boop."** right away.
+  3. The server asks for a fresh shot (`capture_screen`; waits 2 s, then falls back to the latest one if under 30 s old).
+  4. **qwen3-vl:2b-instruct** answers with its own short prompt and no memory. The answer still goes into memory.
+  5. Once Garbis is idle, the mode's model reloads and re-primes in the background.
+- **Measured (GTX 1650):** the look line plays about 0.3 s after you stop talking, and the answer comes about 7–8 s after (model swap + reading the image). The next normal answer is back to about 1.4 s.
+- **Why not a vision model all the time:** as the everyday low-mode model, qwen3-vl:2b parroted its memory, joked worse and chimed in wrongly (5/8), and a screenshot on every reply added about 4 s per answer. qwen3-vl:4b came back empty (thinking model), qwen2.5vl:3b timed out, and moondream was vague.
+- **When he can't look,** the line matches the reason: screen vision off, the macOS Screen Recording permission missing, or the capture failed.
 
 ## 9. Text for speech
 

@@ -10,6 +10,7 @@ import numpy as np
 # binary frame types
 MIC = 0x01          # app -> server: 16 kHz mono int16 LE, 20 ms per frame
 DESKTOP = 0x02      # app -> server: same, desktop audio
+SCREEN = 0x03       # app -> server: u32 request_id (0 = the regular one), JPEG of the main monitor
 CLIP = 0x10         # server -> app: u32 turn_id, u16 seq, mp3 bytes
 
 AUDIO_SOURCES = {MIC: "mic", DESKTOP: "desktop"}
@@ -22,6 +23,24 @@ def parse_audio(data: bytes) -> tuple[str, np.ndarray] | None:
         return None
     samples = np.frombuffer(data, dtype="<i2", offset=1).astype(np.float32) / 32768.0
     return AUDIO_SOURCES[data[0]], samples
+
+
+_SCREEN_HEADER = struct.Struct("<BI")
+MAX_SCREENSHOT_BYTES = 2_000_000
+
+
+def parse_screen(data: bytes) -> tuple[int, bytes] | None:
+    """Returns (request_id, jpeg) for a screenshot frame, or None."""
+    if len(data) <= _SCREEN_HEADER.size or data[0] != SCREEN or len(data) > MAX_SCREENSHOT_BYTES:
+        return None
+    _, request_id = _SCREEN_HEADER.unpack_from(data)
+    jpeg = data[_SCREEN_HEADER.size:]
+    return (request_id, jpeg) if jpeg[:2] == b"\xff\xd8" else None   # JPEG magic
+
+
+def pack_screen(request_id: int, jpeg: bytes) -> bytes:
+    """Test helper: what the app sends."""
+    return _SCREEN_HEADER.pack(SCREEN, request_id) + jpeg
 
 
 def pack_clip(turn_id: int, seq: int, mp3: bytes) -> bytes:

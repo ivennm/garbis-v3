@@ -424,6 +424,11 @@ button {
   color: var(--warn);
 }
 
+.t-action-mentioned,
+.t-action-look {
+  color: var(--accent);
+}
+
 .t-timing {
   color: var(--muted);
   font-size: 11px;

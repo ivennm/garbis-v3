@@ -25,6 +25,15 @@ describe('protocol', () => {
     expect(Array.from(new Uint8Array(clip.mp3))).toEqual([0xff, 0xfb, 0x90])
   })
 
+  it('packs a screenshot like protocol.py parse_screen expects (<BI + JPEG)', async () => {
+    const { SCREEN, packScreen } = await import('./protocol')
+    const jpeg = new Uint8Array([0xff, 0xd8, 1, 2, 3])
+    const v = new DataView(packScreen(42, jpeg))
+    expect(v.getUint8(0)).toBe(SCREEN)
+    expect(v.getUint32(1, true)).toBe(42)
+    expect(Array.from(new Uint8Array(v.buffer, 5))).toEqual([0xff, 0xd8, 1, 2, 3])
+  })
+
   it('rejects frames that are not clips', () => {
     expect(unpackClip(new Uint8Array([MIC, 0, 0, 0, 0, 0, 0]).buffer)).toBeNull()
     expect(unpackClip(new ArrayBuffer(3))).toBeNull()

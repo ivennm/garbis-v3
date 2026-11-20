@@ -28,6 +28,9 @@ from garbis_server.stt import clean_transcript, fix_garbis
     ("1. Assign clear roles.", "Assign clear roles."),
     ("- Stay together", "Stay together"),
     ("Let the ball cost *x*.", "Let the ball cost x."),
+    # roleplay actions are dropped, not read out (llama3.2 writes these, 2026-11-20)
+    ("Hello Supreme Master Leader Sama! *whirs and beeps* Ready to assist!", "Hello Supreme Master Leader Sama! Ready to assist!"),
+    ("*whistles happily* Bleep blorp!", "Bleep blorp!"),
     # things that must stay as they are
     ("Pages 2-3 are good.", "Pages 2-3 are good."),
     ("Hello Supreme Master Leader Sama, beep.", "Hello Supreme Master Leader Sama, beep."),
@@ -60,6 +63,9 @@ def test_splitter_drops_symbol_only_chunks():
     ("Jarvis what time is it", "garbis what time is it"),
     ("Garbis, think hard.", "garbis, think hard."),
     ("I like garbage collection", "i like garbis collection"),     # v2 behavior: known trade-off
+    ("Hey Garber, say something funny.", "hey garbis, say something funny."),   # heard on the Mac
+    ("hey garbers can you see my screen?", "hey garbis can you see my screen?"),
+    ("Garbie!", "garbis!"),
 ])
 def test_fix_garbis(heard, fixed):
     assert fix_garbis(heard).lower() == fixed

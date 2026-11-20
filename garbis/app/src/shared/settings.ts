@@ -14,7 +14,8 @@ export const DEFAULT_SETTINGS: Settings = {
   alwaysOnTop: false,
   desktopAudio: true,
   desktopDeviceId: '',
-  startInTray: false
+  startInTray: false,
+  screenVision: true // "always watching" (2026-11-20): Garbis only looks when asked
 }
 
 /** Merges anything (a parsed settings file, a patch) onto the defaults, keeping only well-typed fields. */

@@ -10,7 +10,9 @@ const ACTION_LABEL: Record<string, string> = {
   ignored: 'ignored',
   stop: 'stopped',
   merged: 'merged',
-  command: 'command'
+  command: 'command',
+  mentioned: 'mentioned', // name came up mid-sentence; a Garbis line follows only if he chimed in
+  look: 'looked' // a question about the screen: he looked at a screenshot to answer
 }
 
 function time(at: number): string {

@@ -14,6 +14,7 @@ _CLAUSE_END = re.compile(r"[,;:—–]\s+")
 _EMOJI = re.compile("[\U0001F000-\U0001FAFF☀-➿️‍]+")
 
 _LIST_MARKER = re.compile(r"(?m)^\s*(?:\d+[.)]|[-*•])\s+")
+_ACTION = re.compile(r"\*+([^*\d]*\s[^*\d]*)\*+")
 _MONEY = re.compile(r"\$(\d+)(?:\.(\d{1,2}))?\b")
 _NUM_L = r"(?<=[\d)])"            # a number or closing bracket on the left
 _NUM_R = r"(?=\s*[\d(])"          # a number or opening bracket on the right
@@ -40,6 +41,9 @@ def speakable(text: str) -> str:
         text = re.sub(r"(?<=[\w)])\s+" + symbol + r"\s+(?=[\w(])", word, text)      # kills + assists (spaced only, so and/or stays)
     text = re.sub(_NUM_L + r"\s+-\s+" + r"(?=[\d(])", " minus ", text)     # only spaced, so 2-3 stays a range
     text = re.sub(r"(?<=[\w)])\s*=\s*(?=[\w($-])", " equals ", text)
+    # roleplay actions like *whirs and beeps*: drop them instead of reading them out
+    # (several words, no digits; single-word emphasis like *x* and numbers like **2.14** stay)
+    text = _ACTION.sub(" ", text)
     # markdown and brackets
     text = re.sub(r"[*_`#~]", "", text)
     text = text.replace("(", "").replace(")", "")

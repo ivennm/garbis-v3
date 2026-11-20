@@ -9,7 +9,7 @@ import { DesktopAudioError, startDesktop } from './audio/desktop'
 import type { DesktopCapture } from './audio/desktop'
 import { desktopGated } from './audio/echo'
 import { ClipPlayer, WebAudioOut } from './audio/player'
-import { DESKTOP, MIC, PROTOCOL_VERSION, packAudio } from './net/protocol'
+import { DESKTOP, MIC, PROTOCOL_VERSION, packAudio, packScreen } from './net/protocol'
 import type { Mode, ServerMessage } from './net/protocol'
 import { GarbisSocket } from './net/socket'
 import { addEntry, addSaid, describe, useGarbis } from './state/store'
@@ -19,6 +19,8 @@ const MIC_KEYS: (keyof Settings)[] = ['micDeviceId', 'echoCancellation', 'noiseS
 const DESKTOP_KEYS: (keyof Settings)[] = ['desktopAudio', 'desktopDeviceId']
 const LEVEL_INTERVAL_MS = 80
 const DESKTOP_RETRY_MS = 5000
+const SCREEN_EVERY_MS = 5000 // "always watching": the server keeps only the latest one, in RAM
+const SCREEN_WIDTH = 768 // reads text fine and keeps the vision model quick (tested 2026-11-20)
 
 /** Peak level, pushed to the store at most every LEVEL_INTERVAL_MS (meters don't need 50 updates/s). */
 function levelMeter(key: 'micLevel' | 'desktopLevel'): (peak: number) => void {
@@ -60,6 +62,7 @@ class Controller {
   private desktopRetry: ReturnType<typeof setTimeout> | null = null
   private started = false
   private lastTray = ''
+  private capturing = false
   private readonly onMicLevel = levelMeter('micLevel')
   private readonly onDesktopLevel = levelMeter('desktopLevel')
 
@@ -83,6 +86,7 @@ class Controller {
     this.pushTrayState()
 
     this.connect()
+    setInterval(() => void this.sendScreen(0), SCREEN_EVERY_MS) // runs for the app's lifetime
     await this.restartMic()
     await this.restartDesktop()
   }
@@ -126,6 +130,9 @@ class Controller {
       case 'toggle-desktop':
         await this.toggleDesktop()
         break
+      case 'toggle-screen':
+        await this.toggleScreen()
+        break
       case 'toggle-transcript':
         await this.togglePanel('transcript')
         break
@@ -141,6 +148,7 @@ class Controller {
       modeLoading: s.modeStatus === 'loading',
       muted: s.muted,
       desktopAudio: s.settings?.desktopAudio ?? false,
+      screenVision: s.settings?.screenVision ?? false,
       transcriptOpen: s.panel === 'transcript'
     }
     const key = JSON.stringify(state)
@@ -233,6 +241,9 @@ class Controller {
       case 'error':
         addEntry('error', `${m.code}: ${m.message}`)
         break
+      case 'capture_screen':
+        void this.sendScreen(m.request_id)
+        break
     }
   }
 
@@ -249,6 +260,39 @@ class Controller {
     // Garbis's own voice comes back through loopback: don't send it (ARCHITECTURE.md §4.3)
     if (desktopGated(this.player.playing, this.player.lastEnd, performance.now())) return
     this.socket?.sendBinary(packAudio(DESKTOP, pcm))
+  }
+
+  // ---- screen vision (2026-11-20) ----
+
+  async toggleScreen(): Promise<void> {
+    await this.updateSettings({ screenVision: !this.settings.screenVision })
+    if (!this.settings.screenVision) useGarbis.setState({ screenLive: false, screenError: null })
+    else void this.sendScreen(0)
+  }
+
+  /** requestId 0 = the regular "always watching" shot; otherwise the server asked for a fresh one. */
+  private async sendScreen(requestId: number): Promise<void> {
+    const s = useGarbis.getState()
+    const refuse = (reason: string) => {
+      if (requestId) this.socket?.send({ type: 'screen_unavailable', request_id: requestId, reason })
+    }
+    if (!this.settings.screenVision) return refuse('screen vision is off in the app')
+    if (s.conn !== 'online' || !s.active || !this.socket?.ready) return
+    if (this.capturing && requestId === 0) return // a regular shot can wait for the next tick
+    this.capturing = true
+    try {
+      const shot = await window.garbis.captureScreen(SCREEN_WIDTH)
+      if (!shot.ok) {
+        useGarbis.setState({ screenLive: false, screenError: shot.reason })
+        return refuse(shot.reason)
+      }
+      const frame = packScreen(requestId, shot.jpeg)
+      if (requestId) this.socket?.sendBinaryAlways(frame)
+      else this.socket?.sendBinary(frame)
+      if (!s.screenLive || s.screenError) useGarbis.setState({ screenLive: true, screenError: null })
+    } finally {
+      this.capturing = false
+    }
   }
 
   async toggleDesktop(): Promise<void> {

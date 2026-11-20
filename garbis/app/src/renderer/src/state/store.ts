@@ -34,6 +34,8 @@ export interface GarbisState {
   desktopLive: boolean // desktop audio is being captured
   desktopError: string | null
   desktopLevel: number
+  screenLive: boolean // screenshots are being sent (screen vision on and working)
+  screenError: string | null
   settings: Settings | null
   panel: Panel
   transcript: Entry[]
@@ -57,6 +59,8 @@ export const initialState: GarbisState = {
   desktopLive: false,
   desktopError: null,
   desktopLevel: 0,
+  screenLive: false,
+  screenError: null,
   settings: null,
   panel: 'none',
   transcript: []

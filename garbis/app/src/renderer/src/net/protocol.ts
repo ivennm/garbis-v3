@@ -6,6 +6,7 @@
 export const PROTOCOL_VERSION = 1
 export const MIC = 0x01 // app -> server: 16 kHz mono int16 LE, 20 ms per frame
 export const DESKTOP = 0x02 // app -> server: same, desktop audio
+export const SCREEN = 0x03 // app -> server: u8 type, u32 LE request_id (0 = the regular one), JPEG
 export const CLIP = 0x10 // server -> app: u8 type, u32 LE turn_id, u16 LE seq, mp3 bytes
 export const FRAME_SAMPLES = 320
 const CLIP_HEADER = 7
@@ -13,7 +14,7 @@ const CLIP_HEADER = 7
 export type FaceState = 'idle' | 'listen' | 'think' | 'speak'
 export type Mode = 'low' | 'high'
 export type ModeStatus = 'loading' | 'ready'
-export type HeardAction = 'reply' | 'followup' | 'ignored' | 'stop' | 'merged' | 'command'
+export type HeardAction = 'reply' | 'followup' | 'ignored' | 'stop' | 'merged' | 'command' | 'mentioned' | 'look'
 
 export type ServerMessage =
   | { type: 'welcome'; server_version: string; protocol: number; mode: Mode; mode_status: ModeStatus; model: string }
@@ -33,6 +34,7 @@ export type ServerMessage =
       total_s: number
     }
   | { type: 'error'; code: string; message: string }
+  | { type: 'capture_screen'; request_id: number }
 
 export interface Hello {
   type: 'hello'
@@ -50,6 +52,7 @@ export type ClientMessage =
   | { type: 'clip_started'; turn_id: number; seq: number }
   | { type: 'clip_ended'; turn_id: number; seq: number; interrupted: boolean }
   | { type: 'mic_muted'; muted: boolean }
+  | { type: 'screen_unavailable'; request_id: number; reason: string }
 
 /** Error codes after which the server closes the socket and retrying won't help. */
 export const REFUSAL_CODES = new Set(['bad_token', 'protocol_mismatch', 'bad_hello'])
@@ -58,6 +61,14 @@ export function packAudio(type: number, pcm: ArrayBuffer): ArrayBuffer {
   const out = new Uint8Array(1 + pcm.byteLength)
   out[0] = type
   out.set(new Uint8Array(pcm), 1)
+  return out.buffer
+}
+
+export function packScreen(requestId: number, jpeg: Uint8Array): ArrayBuffer {
+  const out = new Uint8Array(5 + jpeg.byteLength)
+  out[0] = SCREEN
+  new DataView(out.buffer).setUint32(1, requestId, true)
+  out.set(jpeg, 5)
   return out.buffer
 }
 

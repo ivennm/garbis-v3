@@ -19,6 +19,8 @@ class FakeApp:
         self.play_time = play_time
         self.respond = respond
         self.queue: deque = deque()
+        self.garbis = None
+        self.screen: bytes | None = None              # what the app answers capture_screen with
         self.dropped: set[int] = set()
         self.worker: asyncio.Task | None = None
 
@@ -31,6 +33,13 @@ class FakeApp:
                 self.worker = asyncio.get_running_loop().create_task(self._work())
         elif item.get("type") == "stop_audio":
             self.dropped.add(item["turn_id"])
+        elif item.get("type") == "capture_screen" and self.garbis is not None:
+            rid = item["request_id"]
+            if self.screen is None:
+                asyncio.get_running_loop().call_soon(
+                    self.garbis.on_message, {"type": "screen_unavailable", "request_id": rid, "reason": "off"})
+            else:
+                asyncio.get_running_loop().call_soon(self.garbis.on_screen, rid, self.screen)
 
     async def _work(self):
         while self.queue:
@@ -64,8 +73,13 @@ class FakeBrain:
         self.fail = False
         self.switched: list[str] = []
         self.sentence_delay = 0.0
+        self.chime = False                            # answer to should_chime_in()
+        self.chime_asked: list[str] = []
+        self.images: list[bytes | None] = []          # image passed to each stream_sentences call
+        self.restored = 0
 
-    async def stream_sentences(self, text, source):
+    async def stream_sentences(self, text, source, image=None):
+        self.images.append(image)
         if self.fail:
             raise ConnectionError("ollama down")
         for s in self.replies:
@@ -73,6 +87,14 @@ class FakeBrain:
                 await self.gate.wait()
             await asyncio.sleep(self.sentence_delay)
             yield s
+
+    async def should_chime_in(self, text, source):
+        self.chime_asked.append(text)
+        await asyncio.sleep(0)
+        return self.chime
+
+    async def restore(self):
+        self.restored += 1
 
     def remember(self, text, source, said):
         self.remembered.append((text, source, said))
@@ -110,4 +132,5 @@ def make_garbis(brain=None, app=None) -> tuple[Garbis, FakeApp, FakeBrain, FakeV
     player = RemotePlayer(app.post)
     app.player = player
     g = Garbis(RemoteUI(app.post), brain, voice, player, FakeSTT(), Commands(), app.post)
+    app.garbis = g
     return g, app, brain, voice

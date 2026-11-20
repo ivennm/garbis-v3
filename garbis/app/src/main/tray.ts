@@ -27,6 +27,7 @@ const INITIAL: TrayState = {
   modeLoading: false,
   muted: false,
   desktopAudio: true,
+  screenVision: true,
   transcriptOpen: false
 }
 
@@ -106,6 +107,12 @@ export class GarbisTray {
         type: 'checkbox',
         checked: s.desktopAudio,
         click: () => h.action('toggle-desktop')
+      },
+      {
+        label: 'Garbis can see my screen',
+        type: 'checkbox',
+        checked: s.screenVision,
+        click: () => h.action('toggle-screen')
       },
       {
         label: 'Show transcript',

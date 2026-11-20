@@ -7,6 +7,7 @@ modes and a cache-friendly prompt (ARCHITECTURE.md §7-8):
 The system prompt never changes within a mode and memory is append-only, so Ollama only
 has to read the new message each turn (0.3 s to first word instead of 2.4 s).
 """
+import base64
 import logging
 from typing import AsyncIterator
 
@@ -29,6 +30,7 @@ class Brain:
         self.memory = memory
         self.mode = mode if mode in config.MODES else config.DEFAULT_MODE
         self.client = client or ollama.AsyncClient(host=config.OLLAMA_HOST)
+        self.vision_used = False          # the vision model was loaded for a look; restore() undoes it
 
     @property
     def spec(self) -> dict:
@@ -61,6 +63,14 @@ class Brain:
         )
         log.info("brain: prompt cache primed (%d exchanges)", self.memory.exchanges)
 
+    async def restore(self):
+        """After a look: load the mode's model again and prime its cache, so the next answer is quick."""
+        if not self.vision_used:
+            return
+        self.vision_used = False
+        await self.warmup()
+        await self.reprime()
+
     async def switch_mode(self, mode: str):
         if mode not in config.MODES:
             raise ValueError(f"unknown mode {mode!r}")
@@ -68,16 +78,34 @@ class Brain:
         await self.warmup()        # OLLAMA_MAX_LOADED_MODELS=1 unloads the other model
         await self.reprime()
 
-    async def stream_sentences(self, text: str, source: str) -> AsyncIterator[str]:
+    async def should_chime_in(self, text: str, source: str) -> bool:
+        """Overheard "garbis" mid-sentence: a few-token YES/NO. Same prefix as a real turn, so the cache holds."""
+        messages = self._history() + [{"role": "user", "content": tag(text, source) + self.spec["decide"]}]
+        reply = await self.client.chat(
+            model=self.model, messages=messages, stream=False, think=False,
+            keep_alive=config.OLLAMA_KEEP_ALIVE, options=self._options(num_predict=3, temperature=0.2),
+        )
+        return reply["message"]["content"].strip().upper().startswith("YES")
+
+    async def stream_sentences(self, text: str, source: str, image: bytes | None = None) -> AsyncIterator[str]:
+        """With `image` (a JPEG of the screen), the vision model answers instead; call restore() afterwards."""
         # Cancelling the task that iterates this closes the HTTP stream,
         # which makes Ollama stop generating immediately.
+        if image is None:
+            model, messages, options = self.model, self.messages(text, source), self._options()
+        else:
+            self.vision_used = True
+            # its own short prompt, no memory (see config.VISION_SYSTEM); the reply still goes into memory
+            messages = [{"role": "system", "content": config.VISION_SYSTEM},
+                        {"role": "user", "content": tag(text, source), "images": [base64.b64encode(image).decode()]}]
+            model, options = config.VISION_MODEL, dict(config.VISION_OPTIONS)
         stream = await self.client.chat(
-            model=self.model,
-            messages=self.messages(text, source),
+            model=model,
+            messages=messages,
             stream=True,
             think=False,                     # never speak reasoning (PLAN.md §5)
             keep_alive=config.OLLAMA_KEEP_ALIVE,
-            options=self._options(),
+            options=options,
         )
         splitter = SentenceSplitter()
         async for part in stream:

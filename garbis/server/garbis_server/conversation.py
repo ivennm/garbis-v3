@@ -9,6 +9,9 @@ Every reply is ONE asyncio task (a "turn") made of three workers running at the 
 Cancelling the turn task stops all three at once (LLM stream closed, TTS dropped,
 `stop_audio` sent so the app cuts playback).
 
+When idle, "garbis" near the start or end of a phrase = talking to him: he answers. "garbis" mid-sentence
+= mentioned in passing: a quick YES/NO check decides whether he chimes in (funny / a question he can answer).
+
 While Garbis is talking:
   - "stop" / "shut up" / other STOP_PHRASES -> he stops right away and stays quiet.
   - anything else you say                   -> ignored, he keeps going.
@@ -18,6 +21,7 @@ While Garbis is talking:
 import asyncio
 import functools
 import itertools
+import re
 import logging
 import time
 from typing import Callable, Optional
@@ -40,12 +44,37 @@ def is_stop(text: str) -> bool:
     return "stop" in words or any(p in t for p in config.STOP_PHRASES if " " in p)
 
 
+def addressing(text: str) -> Optional[str]:
+    """
+    "direct": talking TO Garbis ("hey garbis ...", "garbis, what's ...", "... right, garbis?", short phrases).
+    "mentioned": his name came up mid-sentence; a quick check decides whether he chimes in.
+    None: no wake word.
+    """
+    words = re.findall(r"[a-z']+", text.lower())
+    spots = [i for i, w in enumerate(words) if w.split("'")[0] == config.WAKE_WORD]
+    if not spots:
+        return None
+    if len(words) <= config.ADDRESS_SHORT:
+        return "direct"
+    if any(i < config.ADDRESS_HEAD or i >= len(words) - config.ADDRESS_TAIL for i in spots):
+        return "direct"
+    return "mentioned"
+
+
+def wants_screen(text: str) -> bool:
+    """Is this a question about what's on the screen? (SCREEN_PHRASES, matched on word boundaries)"""
+    t = " " + " ".join(re.findall(r"[a-z']+", text.lower())) + " "
+    return any(f" {p} " in t or f" {p}s " in t for p in config.SCREEN_PHRASES)
+
+
 class Turn:
     def __init__(self, turn_id: int, text: Optional[str], source: str, fixed: Optional[list[str]] = None):
         self.id = turn_id
         self.text = text
         self.source = source
         self.fixed = fixed            # pre-written lines (commands) -> no LLM call
+        self.optional = False         # overheard mention: only speaks if should_chime_in() says yes
+        self.vision = False           # a question about the screen: answered by the vision model
         self.spoken: list[str] = []
         self.task: Optional[asyncio.Task] = None
         self.started_at = time.monotonic()
@@ -75,6 +104,11 @@ class Garbis:
         self.mic_muted = False
         self.mode_status = "ready"
         self._turn_ids = itertools.count(1)
+        self.screenshot: Optional[bytes] = None       # latest JPEG of the main monitor (RAM only)
+        self.screenshot_at = 0.0
+        self._screen_requests: dict[int, asyncio.Future] = {}
+        self._screen_ids = itertools.count(1)
+        self.screen_reason = ""                        # why the app last couldn't send one
         self._tasks: set[asyncio.Task] = set()
         self.segmenters = {
             "mic": SpeechSegmenter("mic", config.MIC_END_SILENCE_MS, self._on_event),
@@ -102,10 +136,40 @@ class Garbis:
                 self._spawn(self.set_mode(str(msg.get("mode"))))
             elif kind == "mic_muted":
                 self.mic_muted = bool(msg.get("muted"))
+            elif kind == "screen_unavailable":
+                fut = self._screen_requests.pop(int(msg.get("request_id", 0)), None)
+                if fut and not fut.done():
+                    fut.set_result(None)
+                self.screen_reason = str(msg.get("reason", ""))
+                log.info("screen unavailable: %s", self.screen_reason or "?")
             else:
                 log.debug("ignored message %r", kind)
         except (KeyError, TypeError, ValueError) as e:
             log.warning("bad %s message: %s", kind, e)
+
+    def on_screen(self, request_id: int, jpeg: bytes):
+        self.screenshot, self.screenshot_at = jpeg, time.monotonic()
+        fut = self._screen_requests.pop(request_id, None)
+        if fut and not fut.done():
+            fut.set_result(jpeg)
+
+    async def get_screenshot(self) -> Optional[bytes]:
+        """A fresh shot of the main monitor if the app answers quickly, else the latest recent one."""
+        request_id = next(self._screen_ids)
+        fut = asyncio.get_running_loop().create_future()
+        self._screen_requests[request_id] = fut
+        self.post({"type": "capture_screen", "request_id": request_id})
+        try:
+            fresh = await asyncio.wait_for(fut, config.SCREEN_REQUEST_TIMEOUT_S)
+            if fresh:
+                return fresh
+        except asyncio.TimeoutError:
+            pass
+        finally:
+            self._screen_requests.pop(request_id, None)
+        if self.screenshot and time.monotonic() - self.screenshot_at < config.SCREENSHOT_MAX_AGE_S:
+            return self.screenshot
+        return None
 
     def on_active_changed(self, conn):
         self._spawn(self._device_changed(conn))
@@ -114,6 +178,7 @@ class Garbis:
         """Another app took over, or the active one left: drop whatever was in flight."""
         await self._cancel_turn()
         self.player.reset()
+        self.screenshot = None                         # a different device = a different screen
         for seg in self.segmenters.values():
             seg.discard()
         self.mic_speaking = False
@@ -191,7 +256,7 @@ class Garbis:
         kind = commands.match(text)
         if kind and kind.startswith("mode_") and ev.source != "mic":
             kind = None                              # guests can't switch modes
-        named = config.WAKE_WORD in text
+        address = addressing(text)
 
         if ev.source == "mic":
             turn = self.turn
@@ -222,12 +287,17 @@ class Garbis:
             if kind:
                 self._heard("mic", text, "command")
                 self._spawn(self._run_command(kind, text))
-            elif named:
-                self._heard("mic", text, "reply")
-                self._start_turn(text, "mic", t_heard, t_stt)
+            elif address == "direct":
+                look = wants_screen(text)
+                self._heard("mic", text, "look" if look else "reply")
+                self._start_turn(text, "mic", t_heard, t_stt, vision=look)
+            elif address == "mentioned":
+                self._heard("mic", text, "mentioned")
+                self._start_turn(text, "mic", t_heard, t_stt, optional=True)
             elif time.monotonic() < self.followup_until:
-                self._heard("mic", text, "followup")
-                self._start_turn(text, "mic", t_heard, t_stt)
+                look = wants_screen(text)
+                self._heard("mic", text, "look" if look else "followup")
+                self._start_turn(text, "mic", t_heard, t_stt, vision=look)
             else:
                 self._heard("mic", text, "ignored")
                 if not self.mic_speaking:
@@ -241,9 +311,12 @@ class Garbis:
         if kind:
             self._heard("desktop", text, "command")
             self._spawn(self._run_command(kind, text))
-        elif named:
+        elif address == "direct":
             self._heard("desktop", text, "reply")
             self._start_turn(text, "desktop", t_heard, t_stt)
+        elif address == "mentioned":
+            self._heard("desktop", text, "mentioned")
+            self._start_turn(text, "desktop", t_heard, t_stt, optional=True)
         else:
             self._heard("desktop", text, "ignored")
 
@@ -286,11 +359,14 @@ class Garbis:
     # Turns
     # =========================================================
     def _start_turn(self, text: Optional[str], source: str, t_heard: float = 0.0,
-                    t_stt: float = 0.0, fixed: Optional[list[str]] = None) -> Turn:
+                    t_stt: float = 0.0, fixed: Optional[list[str]] = None, optional: bool = False,
+                    vision: bool = False) -> Turn:
         prev = self.turn
         if prev and prev.task and not prev.task.done():
             prev.task.cancel()                    # two phrases raced -- newest wins
         turn = Turn(next(self._turn_ids), text, source, fixed)
+        turn.optional = optional
+        turn.vision = vision
         if t_heard:
             turn.t_heard, turn.t_stt = t_heard, t_stt
         self.turn = turn
@@ -312,6 +388,8 @@ class Garbis:
     async def _run_turn(self, turn: Turn, prev_task: Optional[asyncio.Task] = None):
         if prev_task and not prev_task.done():
             await asyncio.wait([prev_task])       # never two turns playing at once
+        if turn.optional and not await self._chime_in(turn):
+            return
         self.ui.set_state("think")
         sentences: asyncio.Queue = asyncio.Queue()
         clips: asyncio.Queue = asyncio.Queue(maxsize=2)    # synthesize up to 2 sentences ahead
@@ -320,6 +398,16 @@ class Garbis:
             if turn.fixed is not None:
                 for line in turn.fixed:
                     await sentences.put(line)
+            elif turn.vision:
+                await sentences.put(config.LOOK_LINE)          # plays while the vision model loads
+                shot = await self.get_screenshot()
+                if shot is None:
+                    await sentences.put(self._cant_see_line())
+                else:
+                    async for s in self.brain.stream_sentences(turn.text, turn.source, image=shot):
+                        if not turn.t_first_text:
+                            turn.t_first_text = time.monotonic()
+                        await sentences.put(s)
             else:
                 async for s in self.brain.stream_sentences(turn.text, turn.source):
                     if not turn.t_first_text:
@@ -375,11 +463,53 @@ class Garbis:
                     evicted = self.brain.remember(turn.text, turn.source, said)
                     if self.on_memory_changed:
                         self.on_memory_changed(evicted)
+            if turn.vision:
+                self._spawn(self._restore_after_look())
             if self.turn is turn:
                 self.turn = None
                 self.last_turn_end = time.monotonic()
-                self.followup_until = self.last_turn_end + config.FOLLOWUP_SECONDS
+                if turn.spoken:                   # no follow-up window if he never said anything
+                    self.followup_until = self.last_turn_end + config.FOLLOWUP_SECONDS
                 self.ui.set_state("idle")
+
+    def _cant_see_line(self) -> str:
+        reason = self.screen_reason.lower()
+        if "off" in reason or not reason:
+            return config.CANT_SEE_LINE
+        if "not allowed" in reason or "permission" in reason or "recording" in reason:
+            return config.NO_PERMISSION_LINE
+        return config.CANT_CAPTURE_LINE
+
+    async def _restore_after_look(self):
+        """Reload the mode's model once Garbis is idle, so the next normal answer is quick again."""
+        await asyncio.sleep(0.3)
+        while self.turn is not None or self.mode_status == "loading":
+            if self.turn is not None and self.turn.vision:
+                return                                   # another look is running; it restores afterwards
+            await asyncio.sleep(0.3)
+        try:
+            await self.brain.restore()
+        except Exception as e:
+            log.warning("couldn't reload %s after looking: %s", self.brain.model, e)
+
+    async def _chime_in(self, turn: Turn) -> bool:
+        """Overheard "garbis" mid-sentence: ask the brain whether to speak up. On no, end the turn silently
+        (no thinking face, no memory, no follow-up window)."""
+        try:
+            chime = await self.brain.should_chime_in(turn.text, turn.source)
+        except asyncio.CancelledError:
+            if self.turn is turn:
+                self.turn = None
+            raise
+        except Exception as e:
+            log.warning("chime-in check failed (%s); staying quiet", e)
+            chime = False
+        log.info("Garbis: %s", "(chiming in)" if chime else "(stayed quiet)")
+        if not chime and self.turn is turn:
+            self.turn = None
+            if not self.mic_speaking:
+                self.ui.set_state("idle")
+        return chime
 
     def _on_audio_start(self, turn: Turn, sentence: str):
         if not turn.spoken:

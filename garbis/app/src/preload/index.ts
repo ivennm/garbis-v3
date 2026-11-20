@@ -12,6 +12,7 @@ const bridge: GarbisBridge = {
   setSettings: (patch) => ipcRenderer.invoke('settings:set', patch),
   setLayout: (layout) => ipcRenderer.invoke('window:layout', layout),
   setTrayState: (state) => ipcRenderer.send('tray:state', state),
+  captureScreen: (maxWidth) => ipcRenderer.invoke('screen:capture', maxWidth),
   onTrayAction: (handler) => {
     const listener = (_e: IpcRendererEvent, action: TrayAction) => handler(action)
     ipcRenderer.on('tray:action', listener)

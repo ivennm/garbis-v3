@@ -4,6 +4,7 @@ Connections from apps. Only one is active at a time; the newest takes over (ARCH
 The handler (the conversation engine) only ever hears from the active app:
   welcome() -> dict            fields for the `welcome` message
   on_audio(source, samples)    a 20 ms audio frame
+  on_screen(request_id, jpeg)  a screenshot of the main monitor
   on_message(msg)              any other JSON message
   on_active_changed(conn)      a different app (or none) is now active
 
@@ -27,6 +28,7 @@ class Handler(Protocol):
     def welcome(self) -> dict: ...
     def on_audio(self, source: str, samples) -> None: ...
     def on_message(self, msg: dict) -> None: ...
+    def on_screen(self, request_id: int, jpeg: bytes) -> None: ...
     def on_active_changed(self, conn: "Optional[Connection]") -> None: ...
 
 
@@ -90,9 +92,15 @@ class SessionManager:
                     break
                 if m.get("bytes") is not None:
                     if conn is self.active:
-                        parsed = protocol.parse_audio(m["bytes"])
-                        if parsed:
-                            self.handler.on_audio(*parsed)
+                        data = m["bytes"]
+                        if data[:1] == bytes([protocol.SCREEN]):
+                            shot = protocol.parse_screen(data)
+                            if shot:
+                                self.handler.on_screen(*shot)
+                        else:
+                            parsed = protocol.parse_audio(data)
+                            if parsed:
+                                self.handler.on_audio(*parsed)
                 elif m.get("text") is not None:
                     self._on_text(conn, m["text"])
         except (WebSocketDisconnect, RuntimeError):

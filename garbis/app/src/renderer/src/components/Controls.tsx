@@ -28,6 +28,16 @@ function SpeakerIcon({ off }: { off: boolean }) {
   )
 }
 
+function EyeIcon({ off }: { off: boolean }) {
+  return (
+    <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
+      <path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z" strokeLinejoin="round" />
+      <circle cx="12" cy="12" r="3" />
+      {off && <path d="M4 4l16 16" strokeLinecap="round" />}
+    </svg>
+  )
+}
+
 function ListIcon() {
   return (
     <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden>
@@ -62,6 +72,9 @@ export default function Controls() {
   const desktopLive = useGarbis((s) => s.desktopLive)
   const desktopError = useGarbis((s) => s.desktopError)
   const transcriptOpen = useGarbis((s) => s.panel === 'transcript')
+  const screenOn = useGarbis((s) => s.settings?.screenVision ?? false)
+  const screenLive = useGarbis((s) => s.screenLive)
+  const screenError = useGarbis((s) => s.screenError)
 
   const canSwitch = conn === 'online' && active && modeStatus === 'ready'
   const other = mode === 'low' ? 'high' : 'low'
@@ -96,6 +109,18 @@ export default function Controls() {
         aria-pressed={desktopOn}
       >
         <SpeakerIcon off={!desktopOn} />
+      </button>
+      <button
+        className={`icon ${screenOn && screenError ? 'icon-on' : screenOn && screenLive ? 'icon-live' : ''}`}
+        onClick={() => void controller.toggleScreen()}
+        title={
+          !screenOn
+            ? 'Screen vision off: click so Garbis can look at your main monitor when you ask'
+            : (screenError ?? 'Garbis can see your main monitor (he looks only when you ask): click to stop')
+        }
+        aria-pressed={screenOn}
+      >
+        <EyeIcon off={!screenOn} />
       </button>
       <button
         className={`icon ${transcriptOpen ? 'icon-active' : ''}`}

@@ -66,6 +66,11 @@ export class GarbisSocket {
     if (this.ready && this.ws!.bufferedAmount < MAX_BUFFERED_BYTES) this.ws!.send(data)
   }
 
+  /** For data that must arrive even if audio is backed up (a requested screenshot). */
+  sendBinaryAlways(data: ArrayBuffer): void {
+    if (this.ready) this.ws!.send(data)
+  }
+
   private open(): void {
     const Impl = this.opts.WebSocketImpl ?? WebSocket
     this.opts.onStatus('connecting')
