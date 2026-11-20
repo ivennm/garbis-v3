@@ -1,0 +1,89 @@
+# Builds the Garbis installers on GitHub's Mac and Windows machines and puts them on a DRAFT release.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# Drafts are only visible to people with push access to the repo (just you), even though the repo
+# is public. Download the .dmg / .exe from the draft on the Releases page; DON'T click "Publish",
+# or anyone could download them. Nothing is uploaded as a workflow artifact (those are downloadable
+# by any logged-in GitHub user on a public repo).
+#
+# The tag sets the app version (v0.2.0 -> 0.2.0), so installer names match the release.
+
+name: Build installers
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the draft release and upload to it
+
+concurrency:
+  group: installers-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  draft:
+    name: Create draft release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create the draft (or reuse it if this tag was built before)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $TAG already exists; installers will be replaced."
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft --verify-tag \
+              --title "Garbis $TAG" \
+              --notes "Private draft: keep it unpublished. Mac: open the .dmg, drag Garbis to Applications, then allow it once in System Settings > Privacy & Security > Open Anyway. Windows: run the Setup .exe (SmartScreen: More info > Run anyway)."
+          fi
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: draft
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Mac
+            os: macos-latest # Apple Silicon runner -> arm64 .dmg
+            target: --mac
+            files: dist/*.dmg
+          - name: Windows
+            os: windows-latest
+            target: --win
+            files: dist/*.exe
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: garbis/app
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 26
+          cache: npm
+          cache-dependency-path: garbis/app/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Version from tag
+        run: npm version "${GITHUB_REF_NAME#v}" --no-git-tag-version --allow-same-version
+
+      - name: Check
+        run: npm run typecheck && npm test
+
+      - name: Build installer
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false' # no signing certificate; the Mac build is ad-hoc signed (electron-builder.yml)
+        run: npx electron-vite build && npx electron-builder ${{ matrix.target }} --publish never
+
+      - name: Upload to the draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" ${{ matrix.files }} --repo "$GITHUB_REPOSITORY" --clobber

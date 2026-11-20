@@ -33,6 +33,18 @@ The unit runs as `iven` from the venv, after Ollama, and restarts on failure. If
 
 ## 2. Install the app (Mac and Windows)
 
+**Easiest: download the installers from GitHub.** Pushing a version tag makes GitHub build both installers and put them on a **draft** release:
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+Wait about 10 minutes (Actions tab), then open **Releases**, find the draft "Garbis v0.1.0", and download the `.dmg` / `.exe`.
+- Drafts are only visible to you (people with push access), even on a public repo. **Don't click Publish**, or anyone could download them.
+- Next version: tag `v0.1.1` and so on. The tag sets the app version.
+- Mac: the first launch of a downloaded, un-notarized app is blocked. Go to System Settings → Privacy & Security → **Open Anyway**. If macOS says the app is "damaged", run `xattr -dr com.apple.quarantine /Applications/Garbis.app`.
+- Windows: SmartScreen → More info → **Run anyway**.
+
+**Or build it yourself** on each machine:
+
 You need Node 26 LTS (nodejs.org) on the machine. From a checkout of the repo:
 
 | | Mac | Windows |
