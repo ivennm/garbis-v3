@@ -1,0 +1,4 @@
+stop	Garbis, stop.
+short	Hey Garbis, what's two plus two?
+medium	Hey Garbis, can you tell me what the weather is going to be like tomorrow afternoon?
+long	Garbis, I just finished a really long match and my team kept running off on their own, so give me three tips for getting people to actually stick together and play the objective.

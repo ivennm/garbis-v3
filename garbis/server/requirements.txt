@@ -1,0 +1,21 @@
+# Garbis v3 server. Python 3.11. Versions match what was tested on mc-server (2026-11-19).
+fastapi==0.135.1
+uvicorn[standard]==0.41.0
+faster-whisper==1.2.1
+ctranslate2==4.7.1
+onnxruntime==1.24.3
+numpy==2.4.3
+ollama==0.6.3
+edge-tts==7.3.1
+python-dotenv==1.2.4
+requests==2.34.2
+
+# CUDA 12 libraries for whisper on the GPU (ctranslate2 needs cuBLAS + cuDNN 9).
+# Same versions as the working ~/.local install used for the benchmarks.
+nvidia-cublas-cu12==12.8.4.1
+nvidia-cudnn-cu12==9.10.2.21
+
+# tests
+pytest==9.2.0
+pytest-asyncio==1.4.1.post1
+httpx==0.28.1

@@ -1,0 +1,29 @@
+# Packaging (M5). Build the .dmg on the Mac (npm run dist:mac) and the .exe on Windows (npm run dist:win).
+# Not notarized/certificate-signed: fine for building and running on your own machines.
+appId: dev.garbis.app
+productName: Garbis
+directories:
+  buildResources: resources
+  output: dist
+files:
+  - out/**
+  - package.json
+  - resources/** # window + tray icons, loaded at runtime via electron-vite ?asset paths
+mac:
+  target: dmg
+  artifactName: Garbis-${version}-${arch}.${ext}
+  category: public.app-category.utilities
+  # No Apple Developer certificate: ad-hoc sign so it runs on Apple Silicon (an unsigned arm64 app won't
+  # launch). Ad-hoc + hardened runtime rejects Electron's own frameworks, so hardened runtime is off.
+  # macOS may ask for the mic / system-audio permission again after each rebuild (new signature).
+  identity: '-'
+  hardenedRuntime: false
+  extendInfo:
+    NSMicrophoneUsageDescription: Garbis listens for "garbis" and your questions.
+    NSAudioCaptureUsageDescription: Garbis can hear guests in desktop audio (calls, streams, games).
+win:
+  target: nsis
+  artifactName: Garbis Setup ${version}.${ext}
+nsis:
+  oneClick: true
+  perMachine: false

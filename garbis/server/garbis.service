@@ -1,0 +1,42 @@
+# Garbis v3 server as a system service on mc-server (APP_PLAN.md M5).
+#
+# Install:
+#   sudo cp garbis.service /etc/systemd/system/garbis.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now garbis
+# Check:
+#   systemctl status garbis
+#   journalctl -u garbis -f
+#   curl localhost:8765/health
+#
+# Paths assume the code lives in /home/iven/code/projects/garbis/garbis-v3/garbis; edit them if it moves.
+
+[Unit]
+Description=Garbis v3 server (speech detection, whisper, Ollama brain, edge-tts)
+Documentation=file:///home/iven/code/projects/garbis/garbis-v3/README.md
+# Ollama must be up for the brain; the network for edge-tts and the apps.
+After=network-online.target ollama.service
+Wants=network-online.target ollama.service
+
+[Service]
+Type=simple
+User=iven
+Group=iven
+WorkingDirectory=/home/iven/code/projects/garbis/garbis-v3/garbis/server
+ExecStart=/home/iven/code/projects/garbis/garbis-v3/garbis/server/.venv/bin/python -m garbis_server
+Environment=PYTHONUNBUFFERED=1
+# Settings and secrets come from server/.env (GARBIS_TOKEN, Twitch); memory/mode live in server/data/.
+Restart=on-failure
+RestartSec=5
+# Loading whisper + warming the model takes a few seconds; don't count that as a hang.
+TimeoutStartSec=120
+# Uvicorn shuts down cleanly on SIGTERM.
+KillSignal=SIGTERM
+TimeoutStopSec=20
+
+# Light hardening that doesn't get in the way of the GPU or the data folder.
+NoNewPrivileges=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,303 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Garbis test page</title>
+<style>
+  :root { --bg: #1e1e2f; --panel: #26263a; --text: #fff; --muted: #9a9ab0; --idle: #00ccff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.4 -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  .face { font: 60px "Courier New", Courier, monospace; text-align: center; color: var(--idle); margin: 12px 0 0; transition: color .15s; }
+  .status { text-align: center; margin-bottom: 14px; min-height: 20px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; background: var(--panel); padding: 10px; border-radius: 8px; margin-bottom: 10px; }
+  .bar input[type=password], .bar input[type=text] { flex: 1 1 160px; min-width: 0; background: #15151f; color: var(--text); border: 1px solid #3a3a55; border-radius: 6px; padding: 6px 8px; }
+  button { background: #3a3a55; color: var(--text); border: 0; border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { background: #4a4a6a; }
+  button.on { background: #0077aa; }
+  button:disabled { opacity: .5; cursor: default; }
+  .pill { padding: 2px 8px; border-radius: 999px; background: #15151f; color: var(--muted); font-size: 12px; }
+  .banner { display: none; background: #4a3a10; padding: 8px 10px; border-radius: 8px; margin-bottom: 10px; }
+  #log { background: #15151f; border-radius: 8px; padding: 8px 10px; height: 340px; overflow-y: auto; font: 12px/1.5 ui-monospace, Menlo, Consolas, monospace; }
+  #log .heard { color: #00ff99; } #log .said { color: var(--idle); } #log .timing { color: var(--muted); }
+  #log .err { color: #ff7777; } #log .sys { color: #ffff66; }
+  label { color: var(--muted); display: flex; gap: 4px; align-items: center; }
+  .meter { width: 80px; height: 6px; background: #15151f; border-radius: 3px; overflow: hidden; }
+  .meter > div { height: 100%; width: 0; background: #00ff99; }
+</style>
+</head>
+<body>
+<main>
+  <div class="face" id="face">( - _ - )</div>
+  <div class="status" id="status">Not connected</div>
+
+  <div class="banner" id="banner">Garbis is active on <b id="activeDevice"></b>. <button id="takeOver">Use here</button></div>
+
+  <div class="bar">
+    <input id="token" type="password" placeholder="GARBIS_TOKEN (empty if not set)" autocomplete="off">
+    <button id="connect">Connect</button>
+    <span class="pill" id="conn">offline</span>
+  </div>
+
+  <div class="bar">
+    <span>Mode</span>
+    <button id="modeLow" data-mode="low">LOW</button>
+    <button id="modeHigh" data-mode="high">HIGH</button>
+    <span class="pill" id="modeInfo">–</span>
+    <label><input type="checkbox" id="mute"> mute mic</label>
+    <span class="meter" title="mic level"><div id="micLevel"></div></span>
+    <button id="desktop" title="Share a tab or screen with audio as 'desktop' (guest) audio">Share tab audio</button>
+    <span class="meter" title="desktop level"><div id="deskLevel"></div></span>
+  </div>
+
+  <div id="log"></div>
+</main>
+
+<script>
+"use strict";
+// ---- protocol (ARCHITECTURE.md §5) ----
+const MIC = 0x01, DESKTOP = 0x02, CLIP = 0x10, FRAME = 320, DESKTOP_TAIL_MS = 600;
+
+const FACES = {
+  idle:   ["( ⚆ _ ⚆ )", "#00ccff", "Idle"],
+  listen: ["( ◉ ‿ ◉ )", "#00ff99", "Listening"],
+  think:  ["( ◔ _ ◔ )", "#ffff66", "Thinking..."],
+  speak:  ["( ⚆ _ ⚆ )", "#00ccff", "Speaking"],
+};
+
+const $ = (id) => document.getElementById(id);
+let ws = null, wantConnected = false, retryTimer = null, mode = "low", faceState = null;
+let micCtx = null, micStream = null, deskStream = null, muted = false, tailUntil = 0;
+
+// ---- log ----
+function log(cls, text) {
+  const line = document.createElement("div");
+  line.className = cls;
+  line.textContent = `${new Date().toLocaleTimeString()}  ${text}`;
+  $("log").append(line);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+
+// ---- face ----
+function setFace(state, source) {
+  faceState = state;
+  const [face, color, status] = FACES[state] || FACES.idle;
+  $("face").textContent = face;
+  $("face").style.color = color;
+  $("status").textContent = source ? `${status} (${source})` : status;
+}
+function offlineFace(text) {
+  faceState = null;
+  $("face").textContent = "( - _ - )";
+  $("face").style.color = "#777";
+  $("status").textContent = text;
+}
+setInterval(() => {                      // v2 blink: 30% chance every few seconds in idle/speak
+  if ((faceState === "idle" || faceState === "speak") && Math.random() < 0.3) {
+    $("face").textContent = "( ◕ ‿ ◕ )";
+    setTimeout(() => faceState && setFace(faceState), 120);
+  }
+}, 4500);
+
+// ---- socket ----
+function send(obj) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj)); }
+
+function connect() {
+  clearTimeout(retryTimer);
+  const url = `${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`;
+  ws = new WebSocket(url);
+  ws.binaryType = "arraybuffer";
+  $("conn").textContent = "connecting…";
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: "hello", token: $("token").value, protocol: 1,
+      device_name: `browser test page (${navigator.platform})`, os: navigator.platform, app_version: "test" }));
+    send({ type: "mic_muted", muted });
+  };
+  ws.onmessage = (e) => (typeof e.data === "string" ? onJson(JSON.parse(e.data)) : onBinary(e.data));
+  ws.onclose = () => {
+    $("conn").textContent = "offline";
+    player.stopAll();
+    offlineFace(wantConnected ? "Can't reach the server, retrying…" : "Not connected");
+    if (wantConnected) retryTimer = setTimeout(connect, 2000);
+  };
+}
+
+function onJson(m) {
+  switch (m.type) {
+    case "welcome":  $("conn").textContent = `server ${m.server_version}`; showMode(m.mode, m.mode_status, m.model); log("sys", "connected"); break;
+    case "session":
+      $("banner").style.display = m.active ? "none" : "block";
+      $("activeDevice").textContent = m.active_device || "no device";
+      if (!m.active) { player.stopAll(); offlineFace("Inactive"); }
+      break;
+    case "state":    setFace(m.state, m.source); break;
+    case "heard":    log("heard", `[${m.source}] ${m.text}  → ${m.action}`); break;
+    case "say":      log("said", `Garbis: ${m.text}`); break;
+    case "stop_audio": player.stop(m.turn_id); break;
+    case "turn_end": break;
+    case "mode":     showMode(m.mode, m.status, m.model); break;
+    case "timing":   log("timing", `[timing] heard ${m.heard_s}s · first words ${m.first_text_s}s · voice ${m.first_audio_s}s · total ${m.total_s}s`); break;
+    case "error":    log("err", `error ${m.code}: ${m.message}`); if (m.code === "bad_token") { wantConnected = false; updateConnectButton(); } break;
+    default:         log("sys", JSON.stringify(m));
+  }
+}
+
+function onBinary(buf) {
+  const v = new DataView(buf);
+  if (v.getUint8(0) !== CLIP) return;
+  player.add(v.getUint32(1, true), v.getUint16(5, true), buf.slice(7));
+}
+
+function showMode(m, status, model) {
+  mode = m;
+  $("modeLow").classList.toggle("on", m === "low");
+  $("modeHigh").classList.toggle("on", m === "high");
+  $("modeInfo").textContent = status === "loading" ? `switching to ${model}…` : model;
+}
+
+// ---- player: clips in seq order, reports clip_started / clip_ended (ARCHITECTURE.md §4.4) ----
+const player = {
+  ctx: null, queue: [], current: null, dropped: new Set(), pumping: false,
+  init() { this.ctx = this.ctx || new AudioContext(); },
+  add(turn, seq, data) {
+    if (this.dropped.has(turn)) return;
+    this.queue.push({ turn, seq, buf: this.ctx.decodeAudioData(data) });
+    this.pump();
+  },
+  async pump() {
+    if (this.pumping) return;
+    this.pumping = true;
+    try {
+      while (this.queue.length) {
+        const item = this.queue.shift();
+        let buf;
+        try { buf = await item.buf; } catch (e) {
+          log("err", `could not decode clip ${item.turn}/${item.seq}`);
+          send({ type: "clip_ended", turn_id: item.turn, seq: item.seq, interrupted: true });
+          continue;
+        }
+        if (this.dropped.has(item.turn)) continue;
+        await this.play(item, buf);
+      }
+    } finally { this.pumping = false; }
+  },
+  play(item, buf) {
+    return new Promise((resolve) => {
+      const src = this.ctx.createBufferSource();
+      src.buffer = buf;
+      src.connect(this.ctx.destination);
+      const cur = { ...item, src, stopped: false };
+      this.current = cur;
+      src.onended = () => {
+        this.current = null;
+        tailUntil = performance.now() + DESKTOP_TAIL_MS;
+        send({ type: "clip_ended", turn_id: item.turn, seq: item.seq, interrupted: cur.stopped });
+        resolve();
+      };
+      src.start();
+      send({ type: "clip_started", turn_id: item.turn, seq: item.seq });
+    });
+  },
+  stop(turn) {
+    this.dropped.add(turn);
+    this.queue = this.queue.filter((q) => q.turn !== turn);
+    if (this.current && this.current.turn === turn) { this.current.stopped = true; this.current.src.stop(); }
+  },
+  stopAll() {
+    for (const q of this.queue) this.dropped.add(q.turn);
+    this.queue = [];
+    if (this.current) { this.dropped.add(this.current.turn); this.current.stopped = true; this.current.src.stop(); }
+  },
+  get playing() { return this.current !== null; },
+};
+
+// ---- capture: 16 kHz AudioContext + worklet -> 20 ms int16 frames ----
+const WORKLET = `
+class Pcm16k extends AudioWorkletProcessor {
+  constructor() { super(); this.buf = new Int16Array(${FRAME}); this.n = 0; this.peak = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) {
+      const s = Math.max(-1, Math.min(1, ch[i]));
+      this.peak = Math.max(this.peak, Math.abs(s));
+      this.buf[this.n++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      if (this.n === ${FRAME}) {
+        this.port.postMessage({ pcm: this.buf.buffer, peak: this.peak }, [this.buf.buffer]);
+        this.buf = new Int16Array(${FRAME}); this.n = 0; this.peak = 0;
+      }
+    }
+    return true;
+  }
+}
+registerProcessor("pcm16k", Pcm16k);`;
+
+async function ensureCaptureContext() {
+  if (micCtx) return micCtx;
+  micCtx = new AudioContext({ sampleRate: 16000 });
+  await micCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([WORKLET], { type: "application/javascript" })));
+  return micCtx;
+}
+
+async function capture(stream, type, meter, gate) {
+  const ctx = await ensureCaptureContext();
+  const src = ctx.createMediaStreamSource(stream);
+  const node = new AudioWorkletNode(ctx, "pcm16k");
+  const sink = ctx.createGain(); sink.gain.value = 0;     // keeps the node pulled without playing it
+  src.connect(node); node.connect(sink); sink.connect(ctx.destination);
+  node.port.onmessage = ({ data }) => {
+    meter.style.width = `${Math.min(100, data.peak * 140)}%`;
+    if (!ws || ws.readyState !== 1 || gate()) return;
+    const out = new Uint8Array(1 + data.pcm.byteLength);
+    out[0] = type; out.set(new Uint8Array(data.pcm), 1);
+    ws.send(out);
+  };
+  return () => { src.disconnect(); node.disconnect(); };
+}
+
+async function startMic() {
+  if (micStream) return;
+  micStream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: false, channelCount: 1 } });
+  await capture(micStream, MIC, $("micLevel"), () => muted);
+}
+
+let stopDesktop = null;
+async function toggleDesktop() {
+  if (deskStream) {
+    deskStream.getTracks().forEach((t) => t.stop());
+    stopDesktop && stopDesktop(); deskStream = null; $("desktop").classList.remove("on");
+    return;
+  }
+  try {
+    deskStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
+  } catch (e) { log("err", `desktop audio: ${e.message}`); return; }
+  deskStream.getVideoTracks().forEach((t) => t.stop());
+  if (!deskStream.getAudioTracks().length) { log("err", "no audio in that share; tick 'share audio'"); deskStream = null; return; }
+  // echo gating: don't send desktop audio while Garbis is playing or just after (ARCHITECTURE.md §4.3)
+  stopDesktop = await capture(deskStream, DESKTOP, $("deskLevel"), () => player.playing || performance.now() < tailUntil);
+  $("desktop").classList.add("on");
+  log("sys", "sharing desktop/tab audio as guest audio");
+}
+
+// ---- UI wiring ----
+function updateConnectButton() { $("connect").textContent = wantConnected ? "Disconnect" : "Connect"; }
+
+$("token").value = localStorage.getItem("garbisToken") || "";
+$("connect").onclick = async () => {
+  if (wantConnected) { wantConnected = false; updateConnectButton(); ws && ws.close(); return; }
+  localStorage.setItem("garbisToken", $("token").value);
+  player.init();
+  try { await startMic(); } catch (e) { log("err", `mic: ${e.message} (open this page via localhost or https)`); return; }
+  wantConnected = true; updateConnectButton(); connect();
+};
+$("takeOver").onclick = () => send({ type: "take_over" });
+$("modeLow").onclick = () => send({ type: "set_mode", mode: "low" });
+$("modeHigh").onclick = () => send({ type: "set_mode", mode: "high" });
+$("mute").onchange = (e) => { muted = e.target.checked; send({ type: "mic_muted", muted }); };
+$("desktop").onclick = () => toggleDesktop();
+
+if (!window.isSecureContext) log("err", "This page isn't a secure origin, so the browser will block the mic. Open it as http://localhost:8765/test through `ssh -L 8765:localhost:8765 mc-server`.");
+</script>
+</body>
+</html>

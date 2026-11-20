@@ -1,0 +1,31 @@
+# local planning notes (kept out of the repo; ARCHITECTURE.md and README.md are committed)
+/APP_PLAN.md
+
+# secrets
+.env
+!.env.example
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# server runtime data (memory, state)
+garbis/server/data/
+
+# node / electron
+node_modules/
+garbis/app/out/
+garbis/app/dist/
+*.tsbuildinfo
+
+# audio scratch
+*.mp3
+!garbis/bench/samples/*.wav
+
+# os / editors
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
